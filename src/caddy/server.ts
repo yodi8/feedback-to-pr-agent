@@ -19,7 +19,7 @@ export async function startCaddy(): Promise<string> {
   caddy = spawn(
     "caddy",
     ["file-server", "--root", previewRoot, "--listen", `:${config.caddy.port}`],
-    { stdio: "inherit", shell: process.platform === "win32" },
+    { stdio: "inherit" },
   );
 
   caddy.on("exit", (code) => {
