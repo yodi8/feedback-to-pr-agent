@@ -22,31 +22,18 @@ export async function handleFeedback(message: string): Promise<HandleResult> {
     };
   }
 
-  if (decision.edits.length === 0) {
-    return { text: `:warning: Agent said "feature" but returned no edits.` };
+  if (!decision.updatedHtml) {
+    return { text: `:warning: Agent said "feature" but returned no updated HTML.` };
   }
 
-  const { content, sha } = await readIndexHtml();
+  const { sha } = await readIndexHtml();
 
-  // Apply edits sequentially, validating each is unambiguous against the evolving file.
-  let updated = content;
-  for (const [i, edit] of decision.edits.entries()) {
-    const occurrences = updated.split(edit.oldString).length - 1;
-    if (occurrences === 0) {
-      return { text: `:warning: Edit ${i + 1} target not found in index.html.` };
-    }
-    if (occurrences > 1) {
-      return { text: `:warning: Edit ${i + 1} target appears ${occurrences} times; need a more specific snippet.` };
-    }
-    updated = updated.replace(edit.oldString, edit.newString);
-  }
-
-  // Write preview first so the URL reflects the change immediately.
-  await writePreview(updated);
+  // Update preview first so the URL reflects the change immediately.
+  await writePreview(decision.updatedHtml);
 
   const prTitle = decision.prTitle ?? "Apply feedback";
   const prUrl = await commitAndOpenPR({
-    newContent: updated,
+    newContent: decision.updatedHtml,
     fileSha: sha,
     branch: `feedback/${Date.now()}`,
     commitMessage: prTitle,

@@ -39,7 +39,6 @@ The agent handles three kinds of messages:
 | **preview** | *"Can I see the current page?"* | Preview URL only, no PR |
 | **noise** | *"Great product page!"* | Short polite acknowledgment, no PR |
 
-For every message the bot first posts `Thinking…` in the thread so you know it's working, then edits its reply once the agent finishes.
 
 ---
 
