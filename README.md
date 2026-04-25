@@ -1,6 +1,6 @@
 # feedback-to-pr-agent
 
-An autonomous Slack agent that watches a `#feedback` channel, classifies each message, and — when the feedback requests a change — surgically edits a single-file HTML product page, opens a GitHub Pull Request, and replies in-thread with the PR link and a live local preview URL served by Caddy.
+An autonomous Slack agent that watches a `#feedback` channel, classifies each message, and — when the feedback requests a change — rewrites a single-file HTML product page, opens a GitHub Pull Request, and replies in-thread with the PR link and a live local preview URL served by Caddy.
 
 Built as the take-home assignment for the Zid Engineering Internship.
 
@@ -46,7 +46,7 @@ The agent handles three kinds of messages:
 
 The agent has two layers of responsibility:
 
-- **The LLM** decides *what* to do — classifying the message and, for features, producing a `{oldString, newString}` edit for `index.html`.
+- **The LLM** decides *what* to do — classifying the message and, for features, returning the full updated `index.html`.
 - **The orchestrator** does *how* — validates the edit is unambiguous, writes the preview file, opens the PR, and composes the Slack reply. Every side effect lives here, not in the model.
 
 This split keeps the code predictable: the model is never trusted with file writes, git operations, or Slack API calls directly.
@@ -82,16 +82,15 @@ The agent does **not** modify its own code — it operates on a separate repo co
 | **[Gemini 2.5 Flash Lite](https://openrouter.ai/models)** via **OpenRouter** | LLM model | Recommended by the assignment. Cheap, fast, good enough for single-file edits. |
 | **[@octokit/rest](https://github.com/octokit/octokit.js)** | GitHub REST API | Typed wrapper over the Contents / Git refs / Pulls endpoints. Cleaner than hand-rolled `fetch`. |
 | **[Caddy](https://caddyserver.com/)** (`file-server`) | Local preview | One-command static server; spawned as a child process from the agent. |
-| **dotenv** | Env loading | Standard `.env` file parsing for local dev. |
 
 ### Key design choices
 
-- **Single preview URL, always latest.** `preview/index.html` is overwritten on each actionable change and Caddy serves it on one port. Historical states live in the PR diff on GitHub.
-- **Surgical find-and-replace edits.** The LLM returns `{oldString, newString}` pairs. The orchestrator rejects edits whose `oldString` doesn't appear exactly once, which prevents accidental reformatting of unchanged regions.
-- **PRs are opened, never merged.** The PR is the human checkpoint. The agent's autonomy stops at "reviewable change."
-- **JSON-output parsing instead of LLM tool calls.** The PI Agent SDK exposes tool calling, but the OpenRouter + Gemini path didn't wire schemas through reliably at the time of writing. Instead, the system prompt asks for a strict JSON decision and we parse it deterministically. Swapping to real tool calls later is a localized change in `src/agent/agent.ts`.
-- **Octokit over raw `fetch`.** Four HTTP calls (read file → get `main` sha → create branch → commit → open PR) expressed as typed methods that read top-to-bottom.
-- **No cloning.** The GitHub Contents API edits a single file on a new branch in one `PUT`. No local working copy, no temp directories.
+- **Full-file rewrite, not patches.** The LLM returns the entire updated `index.html`. At ~25 lines, this is cheaper than fighting the model to produce well-formed structural edits, and it eliminates a whole class of stitching bugs (e.g. duplicated `<style>` tags from naive find-and-replace).
+- **Single preview URL, always latest.** `preview/index.html` is overwritten on every actionable change and Caddy serves one port. Historical states live in the PR diff on GitHub.
+- **PRs opened, never merged.** The PR is the human checkpoint; agent autonomy stops at "reviewable change."
+- **JSON output instead of LLM tool calls.** The PI Agent SDK supports tool calling, but the OpenRouter + Gemini path didn't wire schemas through reliably. The system prompt asks for a strict JSON decision and we parse it ourselves. Swapping to real tool calls is a localized change in `src/agent/agent.ts`.
+- **Three classifications: feature / preview / noise.** `preview` exists because users sometimes just want to see the page without making a change — mapping that to noise (no URL) or feature (spurious PR) both felt wrong.
+- **Contents API, no `git clone`.** Octokit performs four calls (read → resolve base sha → create branch → commit → open PR). No local working copy, no temp directories.
 
 ---
 
@@ -99,56 +98,33 @@ The agent does **not** modify its own code — it operates on a separate repo co
 
 ### Prerequisites
 
-- **Node.js ≥ 20.18.1** (lower versions warn on `undici` and may fail at runtime).
-- **[Caddy](https://caddyserver.com/docs/install)** on your `PATH` (`caddy version` should print a version).
-- A **Slack workspace** you control, with a `#feedback` channel.
-- A **GitHub repository** containing an `index.html` product page on `main`. The agent operates on this repo.
-- An **OpenRouter** account with a small balance ($1 is plenty).
+- Node.js ≥ 20.18.1
+- Caddy on `PATH`
+- A Slack workspace with a `#feedback` channel and a Slack app in Socket Mode
+- A GitHub repo containing the target `index.html` on its base branch
+- An OpenRouter account
 
-### 1. Slack app
+### Slack app
 
-Create a new app at https://api.slack.com/apps → *From scratch*.
+Bot scopes: `channels:history`, `channels:read`, `chat:write`, `app_mentions:read`.
+Event subscriptions: `message.channels`. Socket Mode app-level token with `connections:write`.
+Install the app, invite the bot to `#feedback`.
 
-- **Socket Mode** → Enable → generate an **App-Level Token** with `connections:write` scope (save as `SLACK_APP_TOKEN`, starts with `xapp-`).
-- **OAuth & Permissions** → add these **Bot Token Scopes**:
-  - `channels:history`
-  - `channels:read`
-  - `chat:write`
-  - `app_mentions:read`
-- **Event Subscriptions** → Enable → subscribe to bot event `message.channels`.
-- Install the app to your workspace. Copy the **Bot User OAuth Token** (`xoxb-...`) into `SLACK_BOT_TOKEN`.
-- In Slack: `/invite @your-bot` inside `#feedback`.
-
-> If you change scopes later, click **Reinstall to Workspace** — the existing token is reused.
-
-### 2. GitHub token
-
-Generate a **Personal Access Token (classic)** at https://github.com/settings/tokens with the `repo` scope (required for private repos). Save as `GITHUB_TOKEN`.
-
-### 3. OpenRouter key
-
-Create a key at https://openrouter.ai/keys and save as `OPENROUTER_API_KEY`. Add ~$1 of credit.
-
-### 4. Install and run
+### Run
 
 ```bash
-git clone <this-repo-url>
-cd feedback-to-pr-agent
-
-cp .env.example .env   # then fill in values (see below)
+cp .env.example .env   # fill in values
 npm install
 npm run dev
 ```
 
-You should see:
+Expected boot logs:
 
 ```
 [preview] seeded from GitHub main branch
 [caddy] serving http://localhost:3000/
 [slack] socket mode connected — listening for feedback
 ```
-
-Open `http://localhost:3000/` to confirm the preview is live, then post a message in `#feedback`.
 
 ---
 
@@ -175,9 +151,8 @@ All values live in `.env` (git-ignored). A `.env.example` template is committed.
 
 ## Known limitations
 
-- **No retry/backoff on the LLM call.** A 429 or transient 5xx bubbles up as a Slack error.
 - **No deduplication.** The same feedback posted twice opens two PRs.
-- **Small model, simple math.** Gemini Flash Lite may miss arithmetic-heavy feedback (e.g., currency conversions that require multiplying). Upgrade `OPENROUTER_MODEL` if this matters.
+- **Full-file output.** The model returns the entire `index.html` on every change. Fine at the current page size (~25 lines); will hit token limits as the file grows. A future upgrade would switch to a structured-edit schema for larger files.
 - **Single preview URL.** Older Slack links will reflect whatever the agent most recently wrote. Per-PR previews are out of scope.
 - **Single target file, single repo.** By design; supporting multiple files or repos would require reshaping the edit schema.
 
