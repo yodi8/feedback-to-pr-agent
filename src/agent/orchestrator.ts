@@ -22,40 +22,41 @@ export async function handleFeedback(message: string): Promise<HandleResult> {
     };
   }
 
-  if (!decision.edit) {
-    return { text: `:warning: Agent said "feature" but returned no edit.` };
+  if (decision.edits.length === 0) {
+    return { text: `:warning: Agent said "feature" but returned no edits.` };
   }
 
-  const edit = decision.edit;
   const { content, sha } = await readIndexHtml();
 
-  // Verify the edit is surgical and unambiguous before applying.
-  const occurrences = content.split(edit.oldString).length - 1;
-  if (occurrences === 0) {
-    return { text: `:warning: Agent proposed an edit but the target text wasn't found in index.html.` };
-  }
-  if (occurrences > 1) {
-    return { text: `:warning: Agent's edit target appears ${occurrences} times. Need a more specific snippet.` };
+  // Apply edits sequentially, validating each is unambiguous against the evolving file.
+  let updated = content;
+  for (const [i, edit] of decision.edits.entries()) {
+    const occurrences = updated.split(edit.oldString).length - 1;
+    if (occurrences === 0) {
+      return { text: `:warning: Edit ${i + 1} target not found in index.html.` };
+    }
+    if (occurrences > 1) {
+      return { text: `:warning: Edit ${i + 1} target appears ${occurrences} times; need a more specific snippet.` };
+    }
+    updated = updated.replace(edit.oldString, edit.newString);
   }
 
-  const updated = content.replace(edit.oldString, edit.newString);
-
-  // Update preview first so the URL reflects the change immediately.
+  // Write preview first so the URL reflects the change immediately.
   await writePreview(updated);
 
+  const prTitle = decision.prTitle ?? "Apply feedback";
   const prUrl = await commitAndOpenPR({
     newContent: updated,
     fileSha: sha,
     branch: `feedback/${Date.now()}`,
-    commitMessage: edit.prTitle,
-    prTitle: edit.prTitle,
-    prBody: edit.prBody,
+    commitMessage: prTitle,
+    prTitle,
+    prBody: decision.prBody ?? "Automated change from Slack feedback.",
   });
 
   return {
     text: [
-      decision.reply || "Got it — change applied.",
-      `*Change:* ${edit.changeSummary}`,
+      decision.reply || decision.changeSummary || "Changes applied.",
       `*PR:* ${prUrl}`,
       `*Preview:* ${previewUrl()}`,
     ].join("\n"),

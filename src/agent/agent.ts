@@ -15,31 +15,33 @@ Decide exactly one of:
 - "noise" — the message is praise, a question, a comment, or anything else that doesn't fit the two
   above.
 
+If the feedback asks for multiple distinct changes (e.g. "change the title AND add a logo"),
+produce one entry per change in the "edits" array. Each edit is applied in order.
+
 Reply with a SINGLE JSON object and nothing else (no markdown, no code fences, no prose before or
 after). Schema:
 
 {
   "decision": "feature" | "preview" | "noise",
   "reply": string,                  // one short sentence to post back to the user in Slack
-  "edit": {                         // ONLY when decision === "feature", otherwise null
-    "oldString": string,            // exact substring in index.html, appearing once
-    "newString": string,
-    "prTitle": string,              // short imperative PR title
-    "prBody": string,               // 1-3 sentence PR description
-    "changeSummary": string         // one short sentence summarising the change
-  } | null
+  "edits": [                        // ONLY when decision === "feature" (empty array otherwise).
+    {
+      "oldString": string,          // exact substring in index.html, appearing once
+      "newString": string
+    }
+  ],
+  "prTitle": string | null,         // short imperative PR title; required when decision === "feature"
+  "prBody": string | null,          // 1-3 sentence PR description; required when decision === "feature"
+  "changeSummary": string | null    // one short sentence summarising all changes for Slack
 }`;
 
 export interface AgentDecision {
   decision: "feature" | "preview" | "noise";
   reply: string;
-  edit: {
-    oldString: string;
-    newString: string;
-    prTitle: string;
-    prBody: string;
-    changeSummary: string;
-  } | null;
+  edits: { oldString: string; newString: string }[];
+  prTitle: string | null;
+  prBody: string | null;
+  changeSummary: string | null;
 }
 
 export async function runAgent(feedback: string): Promise<AgentDecision> {
