@@ -40,7 +40,7 @@ export function createSlackApp() {
 
     const thread_ts = message.ts;
     try {
-      await say({ text: "On it — reading the repo and thinking…", thread_ts });
+      await say({ text: "Thinking…", thread_ts });
       const { text } = await handleFeedback(message.text);
       await say({ text, thread_ts });
     } catch (err) {

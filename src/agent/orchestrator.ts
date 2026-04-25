@@ -1,44 +1,61 @@
-import { decide } from "./llm.js";
-import { getFile, openFeedbackPR } from "../github/client.js";
+import { runAgent } from "./agent.js";
+import { readIndexHtml, commitAndOpenPR } from "../github/client.js";
 import { writePreview, previewUrl } from "../caddy/server.js";
 
 export interface HandleResult {
-  text: string;        // message to post in the Slack thread
-}
-
-function slugify(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+  text: string;
 }
 
 export async function handleFeedback(message: string): Promise<HandleResult> {
-  const { content: currentHtml, sha } = await getFile();
-  const decision = await decide(message, currentHtml);
+  const decision = await runAgent(message);
 
-  if (decision.classification === "noise" || !decision.updatedHtml) {
+  if (decision.decision === "noise") {
+    return { text: decision.reply || "Thanks for the note — nothing to change here." };
+  }
+
+  if (decision.decision === "preview") {
     return {
-      text: `Thanks for the note! I didn't detect an actionable change here, so I haven't opened a PR. (${decision.reason})`,
+      text: [
+        decision.reply || "Here's the current page:",
+        `*Preview:* ${previewUrl()}`,
+      ].join("\n"),
     };
   }
 
-  // 1) Update local preview first so the URL immediately reflects the change.
-  await writePreview(decision.updatedHtml);
+  if (!decision.edit) {
+    return { text: `:warning: Agent said "feature" but returned no edit.` };
+  }
 
-  // 2) Open the PR on GitHub.
-  const branch = `feedback/${Date.now()}-${slugify(decision.prTitle ?? decision.reason)}`;
-  const prUrl = await openFeedbackPR({
-    newContent: decision.updatedHtml,
+  const edit = decision.edit;
+  const { content, sha } = await readIndexHtml();
+
+  // Verify the edit is surgical and unambiguous before applying.
+  const occurrences = content.split(edit.oldString).length - 1;
+  if (occurrences === 0) {
+    return { text: `:warning: Agent proposed an edit but the target text wasn't found in index.html.` };
+  }
+  if (occurrences > 1) {
+    return { text: `:warning: Agent's edit target appears ${occurrences} times. Need a more specific snippet.` };
+  }
+
+  const updated = content.replace(edit.oldString, edit.newString);
+
+  // Update preview first so the URL reflects the change immediately.
+  await writePreview(updated);
+
+  const prUrl = await commitAndOpenPR({
+    newContent: updated,
     fileSha: sha,
-    branch,
-    commitMessage: decision.prTitle ?? "Apply feedback",
-    prTitle: decision.prTitle ?? "Apply feedback",
-    prBody: `${decision.prSummary ?? decision.reason}\n\n---\n_Generated automatically from Slack feedback:_\n> ${message}`,
+    branch: `feedback/${Date.now()}`,
+    commitMessage: edit.prTitle,
+    prTitle: edit.prTitle,
+    prBody: edit.prBody,
   });
 
-  const summary = decision.changeSummary ?? decision.reason;
   return {
     text: [
-      `Got it — understood as: _${decision.reason}_`,
-      `*Change:* ${summary}`,
+      decision.reply || "Got it — change applied.",
+      `*Change:* ${edit.changeSummary}`,
       `*PR:* ${prUrl}`,
       `*Preview:* ${previewUrl()}`,
     ].join("\n"),

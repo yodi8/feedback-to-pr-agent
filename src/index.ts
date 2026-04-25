@@ -1,11 +1,11 @@
 import { createSlackApp } from "./slack/listener.js";
 import { startCaddy, stopCaddy, writePreview, previewUrl } from "./caddy/server.js";
-import { getFile } from "./github/client.js";
+import { readIndexHtml } from "./github/client.js";
 
 async function main() {
   // Seed the preview dir with the current main-branch HTML so Caddy has something to serve.
   try {
-    const { content } = await getFile();
+    const { content } = await readIndexHtml();
     await writePreview(content);
     console.log("[preview] seeded from GitHub main branch");
   } catch (err) {
